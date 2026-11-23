@@ -111,9 +111,37 @@
       <label>My level</label>
       <div class="row"><span style="width:90px">🇪🇸 Spanish</span><div class="seg" id="lvl-es"></div></div>
       <div class="row" style="margin-top:8px"><span style="width:90px">🇩🇪 German</span><div class="seg" id="lvl-de"></div></div>
-      <label for="voice">Voice</label>
-      <select id="voice"></select>
-      <p class="muted small">Better voices: iPad Settings → Accessibility → Spoken Content → Voices → Spanish / German → download an “Enhanced” or “Premium” voice, then restart the app.</p>
+      <label for="engine">Voice type</label>
+      <select id="engine">
+        <option value="gemini">Natural AI voices (Gemini, needs internet)</option>
+        <option value="device">iPad voices (instant, works offline)</option>
+      </select>
+      <div id="gVoiceBox">
+        <label for="gvoice">AI voice for this language</label>
+        <select id="gvoice">
+          <optgroup label="Male">
+            <option value="Charon">Charon (male, calm and clear)</option>
+            <option value="Orus">Orus (male, firm)</option>
+            <option value="Puck">Puck (male, upbeat)</option>
+            <option value="Fenrir">Fenrir (male, lively)</option>
+            <option value="Iapetus">Iapetus (male, clear)</option>
+            <option value="Algenib">Algenib (male, deep, gravelly)</option>
+          </optgroup>
+          <optgroup label="Female">
+            <option value="Kore">Kore (female, firm)</option>
+            <option value="Aoede">Aoede (female, light)</option>
+            <option value="Leda">Leda (female, young)</option>
+            <option value="Zephyr">Zephyr (female, bright)</option>
+            <option value="Despina">Despina (female, smooth)</option>
+          </optgroup>
+        </select>
+        <p class="muted small">Takes a second or two the first time a word is played; after that it's instant. If it fails, Lingua falls back to the iPad voice.</p>
+      </div>
+      <div id="dVoiceBox">
+        <label for="voice">iPad voice</label>
+        <select id="voice"></select>
+        <p class="muted small">Safari only offers the iPad's basic voices to web apps.</p>
+      </div>
       <label for="rate">Speaking speed: <span id="rateVal"></span></label>
       <input id="rate" type="range" min="0.5" max="1.1" step="0.05">
       <label for="retention">Target memory retention: <span id="retVal"></span></label>

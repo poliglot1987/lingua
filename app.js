@@ -6,7 +6,7 @@ const load = (k, d) => { try { const v = localStorage.getItem('lingua.' + k); re
 const save = (k, v) => { try { localStorage.setItem('lingua.' + k, JSON.stringify(v)); } catch (e) { toast('Could not save: storage full?'); } };
 
 const S = Object.assign({ apiKey: '', model: 'gemini-3.6-flash', modelCustom: '', lang: 'es',
-  level: { es: 'A2', de: 'A2' }, voice: { es: '', de: '' }, rate: 0.9, retention: 0.9, newPerDay: 20 }, load('settings', {}));
+  level: { es: 'A2', de: 'A2' }, voice: { es: '', de: '' }, tts: 'gemini', gvoice: { es: 'Charon', de: 'Orus' }, rate: 0.9, retention: 0.9, newPerDay: 20 }, load('settings', {}));
 let cards = load('cards', []);
 const known = Object.assign({ es: [], de: [] }, load('known', {}));
 let newLog = load('newlog', {});           // { 'es:2026-11-23': 5 }
@@ -90,7 +90,65 @@ function loadVoices() {
   else if (mine[0]) S.voice[S.lang] = mine[0].voiceURI;
 }
 if ('speechSynthesis' in window) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
-function speak(text, rate = S.rate) {
+function speak(text, rate = S.rate, slow = false) {
+  if (!text) return;
+  if (S.tts === 'gemini' && S.apiKey) {
+    geminiSpeak(text, slow).catch(() => { toast('AI voice unavailable, using iPad voice'); deviceSpeak(text, rate); });
+    return;
+  }
+  deviceSpeak(text, rate);
+}
+
+// Natural voices via Gemini text-to-speech. Audio comes back as raw 16-bit PCM.
+const TTS_MODELS = ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts'];
+const ttsCache = new Map();
+let actx = null, currentSrc = null;
+async function geminiSpeak(text, slow) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  actx = actx || new AC();
+  actx.resume();                                  // must run inside the tap, before any await (iPad rule)
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  if (currentSrc) { try { currentSrc.stop(); } catch {} }
+  const voice = S.gvoice[S.lang] || 'Charon';
+  const key = voice + '|' + (slow ? 1 : 0) + '|' + text;
+  let buf = ttsCache.get(key);
+  if (!buf) {
+    const prompt = (slow ? `Say slowly and clearly, in ${L().name}: ` : `Say in ${L().name}: `) + text;
+    const { bytes, rate } = await ttsRequest(prompt, voice);
+    const n = Math.floor(bytes.length / 2), dv = new DataView(bytes.buffer);
+    buf = actx.createBuffer(1, n, rate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) ch[i] = dv.getInt16(i * 2, true) / 32768;
+    ttsCache.set(key, buf);
+    if (ttsCache.size > 300) ttsCache.delete(ttsCache.keys().next().value);
+  }
+  const src = actx.createBufferSource();
+  src.buffer = buf; src.connect(actx.destination); src.start(); currentSrc = src;
+}
+async function ttsRequest(prompt, voice) {
+  let lastErr;
+  for (const m of TTS_MODELS) {
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } } })
+      });
+      if (!res.ok) throw new Error('TTS ' + res.status);
+      const j = await res.json();
+      const part = (j.candidates?.[0]?.content?.parts || []).find(p => p.inlineData);
+      if (!part) throw new Error('No audio');
+      const bin = atob(part.inlineData.data), bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const rate = +((part.inlineData.mimeType || '').match(/rate=(\d+)/)?.[1] || 24000);
+      return { bytes, rate };
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+function deviceSpeak(text, rate = S.rate) {
   if (!('speechSynthesis' in window) || !text) return;
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
@@ -304,7 +362,7 @@ $('#sayRandom').onclick = () => {
   sayText.value = pool[Math.floor(Math.random() * pool.length)].example; setSayLinks();
 };
 $('#sayListen').onclick = () => speak(sayText.value);
-$('#saySlow').onclick = () => speak(sayText.value, 0.6);
+$('#saySlow').onclick = () => speak(sayText.value, 0.6, true);
 
 let rec = null, chunks = [], stream = null;
 $('#recBtn').onclick = async () => {
@@ -401,7 +459,13 @@ function initSettings() {
     seg.onclick = e => { const b = e.target.closest('button'); if (!b) return; S.level[l] = b.dataset.lv; persist();
       seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
   });
-  $('#voice').onchange = e => { S.voice[S.lang] = e.target.value; persist(); speak(S.lang === 'es' ? '¡Hola! ¿Qué tal?' : 'Hallo! Wie geht es dir?'); };
+  const testPhrase = () => S.lang === 'es' ? '¡Hola! ¿Qué tal?' : 'Hallo! Wie geht es dir?';
+  $('#voice').onchange = e => { S.voice[S.lang] = e.target.value; persist(); deviceSpeak(testPhrase()); };
+  const showEngine = () => { $('#gVoiceBox').style.display = S.tts === 'gemini' ? 'block' : 'none'; $('#dVoiceBox').style.display = S.tts === 'gemini' ? 'none' : 'block'; };
+  $('#engine').value = S.tts; showEngine();
+  $('#engine').onchange = e => { S.tts = e.target.value; persist(); showEngine(); speak(testPhrase()); };
+  $('#gvoice').value = S.gvoice[S.lang];
+  $('#gvoice').onchange = e => { S.gvoice[S.lang] = e.target.value; persist(); speak(testPhrase()); };
   const rate = $('#rate'), ret = $('#retention');
   rate.value = S.rate; $('#rateVal').textContent = S.rate + '×';
   rate.oninput = () => { S.rate = +rate.value; $('#rateVal').textContent = S.rate + '×'; }; rate.onchange = persist;
@@ -449,6 +513,7 @@ function setLang(l) {
   S.lang = l; document.body.dataset.lang = l;
   $('#langswitch').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.l === l));
   loadVoices(); renderResults(); persist();
+  const gv = $('#gvoice'); if (gv) gv.value = S.gvoice[l] || 'Charon';
   const v = document.querySelector('#tabs button.on').dataset.v; if (v === 'review') renderReview(); if (v === 'deck') renderDeck();
 }
 $('#langswitch').onclick = e => { const b = e.target.closest('button'); if (b) setLang(b.dataset.l); };
