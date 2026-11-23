@@ -33,9 +33,24 @@ const forvo = w => `https://forvo.com/word/${encodeURIComponent(w)}/#${S.lang}`;
 const ytSearch = q => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
 
 // ---------- Gemini ----------
-async function gemini(parts) {
+// If the chosen model is busy or out of free quota, try the others in turn.
+const FALLBACKS = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.7-flash'];
+async function gemini(parts, onStatus) {
   if (!S.apiKey) throw new Error('Add your free Gemini API key in Settings first.');
-  const model = S.model === 'custom' ? S.modelCustom.trim() : S.model;
+  const first = S.model === 'custom' ? S.modelCustom.trim() : S.model;
+  const models = [first, ...FALLBACKS.filter(m => m !== first)];
+  let lastErr;
+  for (const m of models) {
+    try { return await callModel(m, parts); }
+    catch (e) {
+      lastErr = e;
+      if (![429, 500, 503].includes(e.status)) throw e;   // only retry when busy / quota
+      if (onStatus) onStatus(`${m} is busy, trying another model…`);
+    }
+  }
+  throw new Error('All models are busy right now. Please try again in a few minutes. (' + lastErr.message + ')');
+}
+async function callModel(model, parts) {
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey },
@@ -44,9 +59,10 @@ async function gemini(parts) {
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error.message; } catch {}
-    if (res.status === 429) msg = 'Free-tier limit reached. Wait a minute (or switch to the Lite model in Settings). ' + msg;
     if (res.status === 404) msg = 'Model not found. Pick another model in Settings. ' + msg;
-    throw new Error(msg);
+    const err = new Error(msg); err.status = res.status;
+    if (/high demand|overloaded/i.test(msg)) err.status = 503;
+    throw err;
   }
   const j = await res.json();
   const text = (j.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
@@ -110,7 +126,7 @@ $('#analyze').onclick = async () => {
     const parts = url
       ? [{ fileData: { fileUri: url } }, { text: analysisPrompt('this YouTube video (use what is spoken)') }]
       : [{ text: analysisPrompt('the following text') + '\n\nTEXT:\n' + text.slice(0, 60000) }];
-    const r = await gemini(parts);
+    const r = await gemini(parts, msg => { st.innerHTML = '<span class="spinner"></span> ' + esc(msg); });
     r.source = url || 'text';
     lastResult[S.lang] = r;
     renderResults();
