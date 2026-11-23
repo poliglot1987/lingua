@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Lingua">
+<meta name="theme-color" content="#f6f3ee">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="styles.css">
+<title>Lingua</title>
+</head>
+<body data-lang="es">
+<header>
+  <h1>Lingua</h1>
+  <div class="langswitch" id="langswitch">
+    <button data-l="es" class="on">🇪🇸 ES</button>
+    <button data-l="de">🇩🇪 DE</button>
+  </div>
+</header>
+
+<main>
+  <!-- LEARN -->
+  <section class="view on" id="v-learn">
+    <h2>Learn from a video or text</h2>
+    <div class="card">
+      <label for="yt">YouTube link</label>
+      <input id="yt" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off">
+      <label for="txt">…or paste any text (article, transcript, lyrics you own, notes)</label>
+      <textarea id="txt" placeholder="Pega aquí un texto… / Füge hier einen Text ein…"></textarea>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="analyze">Analyse</button>
+        <span class="muted small" id="analyzeStatus"></span>
+      </div>
+    </div>
+    <div id="results"></div>
+
+    <h3>Find something to watch</h3>
+    <div class="card">
+      <div class="row">
+        <input class="grow" id="topic" placeholder="Topic, e.g. cooking, football, travel, tech" style="flex:1 1 220px">
+        <button class="btn ghost" id="findBtn">Suggest</button>
+      </div>
+      <div id="findOut"></div>
+    </div>
+  </section>
+
+  <!-- REVIEW -->
+  <section class="view" id="v-review">
+    <h2>Review</h2>
+    <div class="stats">
+      <div class="stat"><b id="stDue">0</b><span class="muted small">due now</span></div>
+      <div class="stat"><b id="stNew">0</b><span class="muted small">new</span></div>
+      <div class="stat"><b id="stAll">0</b><span class="muted small">cards</span></div>
+    </div>
+    <div id="reviewBox"></div>
+  </section>
+
+  <!-- SPEAK -->
+  <section class="view" id="v-speak">
+    <h2>Pronunciation practice</h2>
+    <div class="card">
+      <label for="sayText">Sentence to say</label>
+      <textarea id="sayText" style="min-height:80px"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="btn ghost" id="sayRandom">🎲 From my deck</button>
+        <button class="btn ghost" id="sayListen">🔊 Listen</button>
+        <button class="btn ghost" id="saySlow">🐢 Slowly</button>
+        <a class="small" id="sayYouglish" target="_blank" rel="noopener">Hear natives on YouGlish ↗</a>
+      </div>
+    </div>
+    <div class="card" style="text-align:center">
+      <button class="rec" id="recBtn">● Record</button>
+      <p class="muted small" id="recStatus">Tap, say the sentence, tap again to stop.</p>
+      <div id="speakOut" style="text-align:left"></div>
+    </div>
+  </section>
+
+  <!-- DECK -->
+  <section class="view" id="v-deck">
+    <h2>My words</h2>
+    <div class="row" style="margin-bottom:12px">
+      <input class="grow" id="deckSearch" placeholder="Search…" style="flex:1 1 200px">
+      <div class="seg" id="deckFilter">
+        <button data-f="all" class="on">All</button><button data-f="word">Words</button><button data-f="idiom">Idioms</button><button data-f="known">Known</button>
+      </div>
+    </div>
+    <div class="card" id="deckList"></div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="view" id="v-settings">
+    <h2>Settings</h2>
+    <div class="card">
+      <label for="apiKey">Gemini API key</label>
+      <input id="apiKey" type="password" placeholder="AIza…" autocomplete="off">
+      <p class="muted small">Free at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Stored only on this device.</p>
+      <label for="model">Model</label>
+      <select id="model">
+        <option value="gemini-3.6-flash">gemini-3.6-flash (recommended)</option>
+        <option value="gemini-3.7-flash">gemini-3.7-flash (newest)</option>
+        <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (fastest, most free quota)</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <input id="modelCustom" placeholder="model id" style="margin-top:8px;display:none">
+    </div>
+    <div class="card">
+      <label>My level</label>
+      <div class="row"><span style="width:90px">🇪🇸 Spanish</span><div class="seg" id="lvl-es"></div></div>
+      <div class="row" style="margin-top:8px"><span style="width:90px">🇩🇪 German</span><div class="seg" id="lvl-de"></div></div>
+      <label for="voice">Voice</label>
+      <select id="voice"></select>
+      <p class="muted small">Better voices: iPad Settings → Accessibility → Spoken Content → Voices → Spanish / German → download an “Enhanced” or “Premium” voice, then restart the app.</p>
+      <label for="rate">Speaking speed: <span id="rateVal"></span></label>
+      <input id="rate" type="range" min="0.5" max="1.1" step="0.05">
+      <label for="retention">Target memory retention: <span id="retVal"></span></label>
+      <input id="retention" type="range" min="0.8" max="0.95" step="0.01">
+      <p class="muted small">Higher = more reviews, better memory. 0.90 is a good default.</p>
+    </div>
+    <div class="card">
+      <label>Backup &amp; export</label>
+      <div class="row">
+        <button class="btn ghost" id="exportJson">Backup (JSON)</button>
+        <label class="btn ghost" style="margin:0;display:inline-flex;align-items:center">Restore<input type="file" id="importJson" accept=".json,application/json" hidden></label>
+        <button class="btn ghost" id="exportAnki">Export for Anki</button>
+      </div>
+      <p class="muted small">Your deck lives in this app on this iPad. Make a backup now and then (save it to Files / iCloud Drive).</p>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs" id="tabs">
+  <button data-v="learn" class="on"><span>📺</span>Learn</button>
+  <button data-v="review"><span>🧠</span>Review<i class="badge" id="dueBadge" hidden></i></button>
+  <button data-v="speak"><span>🎙️</span>Speak</button>
+  <button data-v="deck"><span>📚</span>Words</button>
+  <button data-v="settings"><span>⚙️</span>Settings</button>
+</nav>
+<div class="toast" id="toast"></div>
+<script src="fsrs.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
