@@ -394,8 +394,12 @@ document.addEventListener('selectionchange', () => {
     if (!reader || !sel || sel.isCollapsed || !reader.contains(sel.anchorNode) || !reader.contains(sel.focusNode)) { bar.hidden = true; return; }
     const text = sel.toString().replace(/\s+/g, ' ').replace(/^[ \t]*(?:\d{1,2}:)?\d{1,2}:\d{2}\s*/g, '').trim();
     if (text.length < 2 || text.length > 400) { bar.hidden = true; return; }
-    const node = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
-    const tEl = node.closest('.t') || node.querySelector?.('.t');
+    const rg = sel.getRangeAt(0);
+    let n = rg.startContainer;
+    if (n.nodeType === 1) n = n.childNodes[rg.startOffset] || n;       // selection starts between elements
+    let el = n.nodeType === 1 ? n : n.parentElement;
+    let tEl = el.closest('.t');
+    if (!tEl) { while (el && !(el.classList && el.classList.contains('t'))) el = el.nextElementSibling; tEl = el; }
     const i = tEl ? +tEl.dataset.i : 0;
     selInfo = { text, off: tokens[i]?.o || 0, t: tokens[i]?.t };
     bar.hidden = false;
