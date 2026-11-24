@@ -5,43 +5,46 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Lingua">
-<meta name="theme-color" content="#f6f3ee">
+<meta name="theme-color" content="#0f1210" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f5f4" media="(prefers-color-scheme: light)">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="styles.css">
 <title>Lingua</title>
 </head>
-<body data-lang="es">
+<body>
 <header>
   <h1>Lingua</h1>
-  <div class="langswitch" id="langswitch">
-    <button data-l="es" class="on">🇪🇸 ES</button>
-    <button data-l="de">🇩🇪 DE</button>
-  </div>
+  <div class="langswitch" id="langswitch"></div>
 </header>
 
 <main>
   <!-- LEARN -->
   <section class="view on" id="v-learn">
-    <h2>Learn from a video or text</h2>
+    <h2>Learn from a video, article or text</h2>
     <div class="card">
-      <label for="yt">YouTube link</label>
-      <input id="yt" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off">
-      <label for="txt">…or paste any text (article, transcript, lyrics you own, notes)</label>
-      <textarea id="txt" placeholder="Pega aquí un texto… / Füge hier einen Text ein…"></textarea>
+      <label for="yt">YouTube or article link</label>
+      <input id="yt" type="url" placeholder="Paste a YouTube or article link" autocomplete="off">
+      <label for="txt">…or paste text: an article, a YouTube transcript (timestamps are fine), lyrics, notes</label>
+      <textarea id="txt" placeholder="Paste text here"></textarea>
       <div class="row" style="margin-top:12px">
         <button class="btn" id="analyze">Analyse</button>
-        <span class="muted small" id="analyzeStatus"></span>
+        <label class="check"><input type="checkbox" id="songMode"> It's a song</label>
+        <span class="muted small grow" id="analyzeStatus"></span>
       </div>
+      <p class="muted small" id="learnHint">Tip: a link <i>and</i> its pasted transcript together give you "hear it in context" links for every word.</p>
     </div>
     <div id="results"></div>
 
-    <h3>Find something to watch</h3>
+    <h3>Recent</h3>
+    <div class="card" id="recent"></div>
+
+    <h3>Find something to watch or read</h3>
     <div class="card">
       <div class="row">
-        <input class="grow" id="topic" placeholder="Topic, e.g. cooking, football, travel, tech" style="flex:1 1 220px">
+        <input id="topic" placeholder="Topic, e.g. cooking, football, travel, tech" style="flex:1 1 220px">
         <button class="btn ghost" id="findBtn">Suggest</button>
       </div>
       <div id="findOut"></div>
@@ -50,10 +53,10 @@
 
   <!-- REVIEW -->
   <section class="view" id="v-review">
-    <h2>Review</h2>
+    <h2 id="reviewTitle">Review</h2>
     <div class="stats">
-      <div class="stat"><b id="stDue">0</b><span class="muted small">due now</span></div>
-      <div class="stat"><b id="stNew">0</b><span class="muted small">new</span></div>
+      <div class="stat"><b id="stDue">0</b><span class="muted small">due today</span></div>
+      <div class="stat"><b id="stNew">0</b><span class="muted small">new today</span></div>
       <div class="stat"><b id="stAll">0</b><span class="muted small">cards</span></div>
     </div>
     <div id="reviewBox"></div>
@@ -66,27 +69,28 @@
       <label for="sayText">Sentence to say</label>
       <textarea id="sayText" style="min-height:80px"></textarea>
       <div class="row" style="margin-top:10px">
-        <button class="btn ghost" id="sayRandom">🎲 From my deck</button>
-        <button class="btn ghost" id="sayListen">🔊 Listen</button>
-        <button class="btn ghost" id="saySlow">🐢 Slowly</button>
+        <button class="btn ghost" id="sayRandom">From my deck</button>
+        <button class="btn ghost" id="sayListen">Listen</button>
+        <button class="btn ghost" id="saySlow">Slowly</button>
         <a class="small" id="sayYouglish" target="_blank" rel="noopener">Hear natives on YouGlish ↗</a>
       </div>
     </div>
     <div class="card" style="text-align:center">
-      <button class="rec" id="recBtn">● Record</button>
+      <button class="rec" id="recBtn">Record</button>
       <p class="muted small" id="recStatus">Tap, say the sentence, tap again to stop.</p>
       <div id="speakOut" style="text-align:left"></div>
     </div>
   </section>
 
-  <!-- DECK -->
+  <!-- WORDS -->
   <section class="view" id="v-deck">
     <h2>My words</h2>
     <div class="row" style="margin-bottom:12px">
-      <input class="grow" id="deckSearch" placeholder="Search…" style="flex:1 1 200px">
+      <input id="deckSearch" placeholder="Search…" style="flex:1 1 200px">
       <div class="seg" id="deckFilter">
-        <button data-f="all" class="on">All</button><button data-f="word">Words</button><button data-f="idiom">Idioms</button><button data-f="known">Known</button>
+        <button data-f="all" class="on">All</button><button data-f="word">Words</button><button data-f="idiom">Idioms</button><button data-f="sentence">Sentences</button><button data-f="known">Known</button>
       </div>
+      <button class="btn ghost" id="deckCsv">Export CSV</button>
     </div>
     <div class="card" id="deckList"></div>
   </section>
@@ -96,7 +100,7 @@
     <h2>Settings</h2>
     <div class="card">
       <label for="apiKey">Gemini API key</label>
-      <input id="apiKey" type="password" placeholder="AIza…" autocomplete="off">
+      <input id="apiKey" type="password" placeholder="Paste your key" autocomplete="off">
       <p class="muted small">Free at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. Stored only on this device.</p>
       <label for="model">Model</label>
       <select id="model">
@@ -118,14 +122,29 @@
         <span class="small" id="testOut"></span>
       </div>
     </div>
+
     <div class="card">
+      <label>My languages</label>
+      <div class="seg" id="langPick"></div>
       <label>My level</label>
-      <div class="row"><span style="width:90px">🇪🇸 Spanish</span><div class="seg" id="lvl-es"></div></div>
-      <div class="row" style="margin-top:8px"><span style="width:90px">🇩🇪 German</span><div class="seg" id="lvl-de"></div></div>
+      <div id="levels"></div>
+    </div>
+
+    <div class="card">
+      <label for="dayStart">New day starts at</label>
+      <select id="dayStart"></select>
+      <label for="newPerDay">New cards per day</label>
+      <select id="newPerDay"></select>
+      <label for="retention">Target memory retention: <span id="retVal"></span></label>
+      <input id="retention" type="range" min="0.8" max="0.95" step="0.01">
+      <p class="muted small">Higher = more reviews, better memory. 90% is a good default.</p>
+    </div>
+
+    <div class="card">
       <label for="engine">Voice type</label>
       <select id="engine">
-        <option value="gemini">Natural AI voices (Gemini, needs internet)</option>
         <option value="device">iPad voices (instant, works offline)</option>
+        <option value="gemini">Natural AI voices (Gemini, needs internet)</option>
       </select>
       <div id="gVoiceBox">
         <label for="gvoice">AI voice for this language</label>
@@ -146,37 +165,41 @@
             <option value="Despina">Despina (female, smooth)</option>
           </optgroup>
         </select>
-        <p class="muted small">Takes a second or two the first time a word is played; after that it's instant. If it fails, Lingua falls back to the iPad voice.</p>
       </div>
       <div id="dVoiceBox">
         <label for="voice">iPad voice</label>
         <select id="voice"></select>
         <p class="muted small">Safari only offers the iPad's basic voices to web apps.</p>
       </div>
-      <label for="rate">Speaking speed: <span id="rateVal"></span></label>
+      <label for="rate">iPad voice speed: <span id="rateVal"></span></label>
       <input id="rate" type="range" min="0.5" max="1.1" step="0.05">
-      <label for="retention">Target memory retention: <span id="retVal"></span></label>
-      <input id="retention" type="range" min="0.8" max="0.95" step="0.01">
-      <p class="muted small">Higher = more reviews, better memory. 0.90 is a good default.</p>
     </div>
+
     <div class="card">
       <label>Backup &amp; export</label>
       <div class="row">
         <button class="btn ghost" id="exportJson">Backup (JSON)</button>
-        <label class="btn ghost" style="margin:0;display:inline-flex;align-items:center">Restore<input type="file" id="importJson" accept=".json,application/json" hidden></label>
+        <label class="btn ghost filebtn">Restore<input type="file" id="importJson" accept=".json,application/json" hidden></label>
         <button class="btn ghost" id="exportAnki">Export for Anki</button>
+        <button class="btn ghost" id="exportCsv">Export CSV</button>
       </div>
       <p class="muted small">Your deck lives in this app on this iPad. Make a backup now and then (save it to Files / iCloud Drive).</p>
     </div>
   </section>
 </main>
 
+<!-- bottom sheet for word details -->
+<div class="sheet-bg" id="sheetBg" hidden></div>
+<div class="sheet" id="sheet" hidden></div>
+<!-- floating bar when text is selected in the reader -->
+<div class="selbar" id="selbar" hidden><button class="btn" id="selAdd">＋ Add selection</button></div>
+
 <nav class="tabs" id="tabs">
-  <button data-v="learn" class="on"><span>📺</span>Learn</button>
-  <button data-v="review"><span>🧠</span>Review<i class="badge" id="dueBadge" hidden></i></button>
-  <button data-v="speak"><span>🎙️</span>Speak</button>
-  <button data-v="deck"><span>📚</span>Words</button>
-  <button data-v="settings"><span>⚙️</span>Settings</button>
+  <button data-v="learn" class="on"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4.5-2.5z" class="fill"/></svg>Learn</button>
+  <button data-v="review"><svg viewBox="0 0 24 24"><rect x="4" y="7" width="13" height="13" rx="2"/><path d="M8 4h10a2 2 0 0 1 2 2v10"/></svg>Review<i class="badge" id="dueBadge" hidden></i></button>
+  <button data-v="speak"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>Speak</button>
+  <button data-v="deck"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/></svg>Words</button>
+  <button data-v="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>Settings</button>
 </nav>
 <div class="toast" id="toast"></div>
 <script src="fsrs.js"></script>
