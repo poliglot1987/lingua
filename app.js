@@ -69,7 +69,7 @@ async function gemini(parts, onStatus, extra, opts) {
   const models = [first, ...FALLBACKS.filter(m => m !== first)];
   let lastErr;
   for (const m of models) {
-    try { return await callModel(m, parts, extra, opts); }
+    try { return await callModel(m, parts, extra, { ...opts, onProgress: onStatus }); }
     catch (e) {
       lastErr = e;
       if (![429, 500, 503].includes(e.status)) throw e;
@@ -78,36 +78,68 @@ async function gemini(parts, onStatus, extra, opts) {
   }
   throw new Error('All models are busy right now. Please try again in a few minutes. (' + lastErr.message + ')');
 }
+// Streams the answer (server-sent events) so the iPad never sees a silent connection
+// (Safari drops requests that send nothing for about a minute). Thought summaries keep it alive.
 async function callModel(model, parts, extra = {}, opts = {}) {
-  const json = opts.json !== false;
-  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 180000);
-  const body = { contents: [{ role: 'user', parts }],
-    generationConfig: json ? { responseMimeType: 'application/json', temperature: 0.4, ...extra } : { temperature: 0.2, ...extra } };
+  const variants = [{ includeThoughts: true, thinkingLevel: 'low' }, { includeThoughts: true }, null];
+  let lastErr;
+  for (const tc of variants) {
+    try { return await streamOnce(model, parts, extra, opts, tc); }
+    catch (e) { lastErr = e; if (e.status === 400 && /thinking/i.test(e.message)) continue; throw e; }
+  }
+  throw lastErr;
+}
+async function streamOnce(model, parts, extra, opts, thinking) {
+  const json = opts.json !== false, progress = opts.onProgress || (() => {});
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 240000);
+  const gc = json ? { responseMimeType: 'application/json', temperature: 0.4, ...extra } : { temperature: 0.2, ...extra };
+  if (thinking) gc.thinkingConfig = thinking;
+  const body = { contents: [{ role: 'user', parts }], generationConfig: gc };
   if (opts.tools) body.tools = opts.tools;
-  let res;
+  let text = '', finish = '', block = '';
   try {
-    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, {
       method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey }, body: JSON.stringify(body) });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try { const j = await res.json(); msg = (Array.isArray(j) ? j[0] : j).error.message; } catch {}
+      if (res.status === 404) msg = 'Model not found. Pick another model in Settings. ' + msg;
+      const err = new Error(msg); err.status = res.status;
+      if (/high demand|overloaded/i.test(msg)) err.status = 503;
+      throw err;
+    }
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        let chunk; try { chunk = JSON.parse(line.slice(5)); } catch { continue; }
+        if (chunk.error) { const err = new Error(chunk.error.message); err.status = chunk.error.code || 500; throw err; }
+        const cand = chunk.candidates?.[0];
+        for (const p of cand?.content?.parts || []) {
+          if (p.thought) progress('Thinking…');
+          else if (p.text) { text += p.text; progress('Writing… ' + text.length.toLocaleString() + ' characters'); }
+        }
+        if (cand?.finishReason) finish = cand.finishReason;
+        if (chunk.promptFeedback?.blockReason) block = chunk.promptFeedback.blockReason;
+      }
+    }
   } catch (e) {
-    const err = new Error(e.name === 'AbortError' ? 'Gemini took longer than 3 minutes. Try a shorter video part (Settings → Video length) or a shorter text.'
+    if (e.status) throw e;
+    const err = new Error(e.name === 'AbortError' ? 'Gemini took longer than 4 minutes. Try a shorter video part (Settings → Video length) or a shorter text.'
       : 'Connection lost (' + e.message + '). Keep Lingua open on screen while it works, then try again.');
     err.status = 0; throw err;
   } finally { clearTimeout(timer); }
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).error.message; } catch {}
-    if (res.status === 404) msg = 'Model not found. Pick another model in Settings. ' + msg;
-    const err = new Error(msg); err.status = res.status;
-    if (/high demand|overloaded/i.test(msg)) err.status = 503;
-    throw err;
-  }
-  const j = await res.json();
-  const cand = j.candidates?.[0];
-  const text = (cand?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
   if (!text) {
-    if (cand?.finishReason === 'RECITATION') throw new Error('Google would not copy this page word for word. Open the article in Safari → aA → Show Reader → select all → copy, then paste it into the text box.');
-    throw new Error('Empty answer' + (j.promptFeedback?.blockReason ? ': ' + j.promptFeedback.blockReason : cand?.finishReason ? ' (' + cand.finishReason + ')' : ''));
+    if (finish === 'RECITATION') throw new Error('Google would not copy this page word for word. Open the article in Safari → aA → Show Reader → select all → copy, then paste it into the text box.');
+    throw new Error('Empty answer' + (block ? ': ' + block : finish ? ' (' + finish + ')' : ''));
   }
+  if (finish === 'RECITATION' && !json) toast('Google stopped part-way (copyright filter). You may see only part of the article.');
   return json ? parseJSON(text) : text;
 }
 
