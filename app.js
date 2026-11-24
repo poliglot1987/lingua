@@ -6,7 +6,7 @@ const load = (k, d) => { try { const v = localStorage.getItem('lingua.' + k); re
 const save = (k, v) => { try { localStorage.setItem('lingua.' + k, JSON.stringify(v)); } catch (e) { toast('Could not save: storage full?'); } };
 
 const S = Object.assign({ apiKey: '', model: 'gemini-3.6-flash', modelCustom: '', lang: 'es',
-  level: { es: 'A2', de: 'A2' }, voice: { es: '', de: '' }, tts: 'gemini', gvoice: { es: 'Charon', de: 'Orus' }, rate: 0.9, retention: 0.9, newPerDay: 20 }, load('settings', {}));
+  level: { es: 'A2', de: 'A2' }, voice: { es: '', de: '' }, tts: 'device', clip: 600, gvoice: { es: 'Charon', de: 'Orus' }, rate: 0.9, retention: 0.9, newPerDay: 20 }, load('settings', {}));
 let cards = load('cards', []);
 const known = Object.assign({ es: [], de: [] }, load('known', {}));
 let newLog = load('newlog', {});           // { 'es:2026-11-23': 5 }
@@ -25,7 +25,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const today = () => new Date().toISOString().slice(0, 10);
 const L = () => LANGS[S.lang];
 let toastT;
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2200); }
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), Math.max(2200, msg.length * 70)); }
 const cardId = (lang, type, text) => lang + ':' + type + ':' + String(text).toLowerCase().trim();
 const isKnown = (lemma) => known[S.lang].includes(String(lemma).toLowerCase().trim());
 const youglish = w => `https://youglish.com/pronounce/${encodeURIComponent(w)}/${L().yg}`;
@@ -35,13 +35,13 @@ const ytSearch = q => `https://www.youtube.com/results?search_query=${encodeURIC
 // ---------- Gemini ----------
 // If the chosen model is busy or out of free quota, try the others in turn.
 const FALLBACKS = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.7-flash'];
-async function gemini(parts, onStatus) {
+async function gemini(parts, onStatus, extra) {
   if (!S.apiKey) throw new Error('Add your free Gemini API key in Settings first.');
   const first = S.model === 'custom' ? S.modelCustom.trim() : S.model;
   const models = [first, ...FALLBACKS.filter(m => m !== first)];
   let lastErr;
   for (const m of models) {
-    try { return await callModel(m, parts); }
+    try { return await callModel(m, parts, extra); }
     catch (e) {
       lastErr = e;
       if (![429, 500, 503].includes(e.status)) throw e;   // only retry when busy / quota
@@ -50,12 +50,21 @@ async function gemini(parts, onStatus) {
   }
   throw new Error('All models are busy right now. Please try again in a few minutes. (' + lastErr.message + ')');
 }
-async function callModel(model, parts) {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey },
-    body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.4 } })
-  });
+async function callModel(model, parts, extra = {}) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 180000);
+  let res;
+  try {
+    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST', signal: ctl.signal,
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S.apiKey },
+      body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.4, ...extra } })
+    });
+  } catch (e) {
+    const err = new Error(e.name === 'AbortError'
+      ? 'Gemini took longer than 3 minutes. Try a shorter part of the video (Settings → Video length).'
+      : 'Connection lost (' + e.message + '). Keep Lingua open on screen while it works, then try again.');
+    err.status = 0; throw err;
+  } finally { clearTimeout(timer); }
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error.message; } catch {}
@@ -93,7 +102,10 @@ if ('speechSynthesis' in window) { loadVoices(); speechSynthesis.onvoiceschanged
 function speak(text, rate = S.rate, slow = false) {
   if (!text) return;
   if (S.tts === 'gemini' && S.apiKey) {
-    geminiSpeak(text, slow).catch(() => { toast('AI voice unavailable, using iPad voice'); deviceSpeak(text, rate); });
+    geminiSpeak(text, slow).catch(e => {
+      S.tts = 'device'; persist(); const en = $('#engine'); if (en) { en.value = 'device'; en.dispatchEvent(new Event('sync')); }
+      toast('AI voice failed: ' + (e.message || e) + '. Switched to iPad voice, tap 🔊 again.');
+    });
     return;
   }
   deviceSpeak(text, rate);
@@ -135,7 +147,7 @@ async function ttsRequest(prompt, voice) {
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } } })
       });
-      if (!res.ok) throw new Error('TTS ' + res.status);
+      if (!res.ok) { let m = res.status; try { m = (await res.json()).error.message; } catch {} throw new Error(m); }
       const j = await res.json();
       const part = (j.candidates?.[0]?.content?.parts || []).find(p => p.inlineData);
       if (!part) throw new Error('No audio');
@@ -178,13 +190,24 @@ $('#analyze').onclick = async () => {
   if (url === null) { out.innerHTML = '<div class="err">That does not look like a YouTube link.</div>'; return; }
   if (!url && !text) { toast('Paste a YouTube link or some text'); return; }
   const btn = $('#analyze'); btn.disabled = true;
-  st.innerHTML = '<span class="spinner"></span> ' + (url ? 'Watching the video… (can take ~30–60 s)' : 'Reading…');
+  st.innerHTML = '<span class="spinner"></span> ' + (url ? 'Watching the video… keep Lingua open on screen (30–90 s)' : 'Reading…');
   out.innerHTML = '';
   try {
-    const parts = url
-      ? [{ fileData: { fileUri: url } }, { text: analysisPrompt('this YouTube video (use what is spoken)') }]
-      : [{ text: analysisPrompt('the following text') + '\n\nTEXT:\n' + text.slice(0, 60000) }];
-    const r = await gemini(parts, msg => { st.innerHTML = '<span class="spinner"></span> ' + esc(msg); });
+    const status = msg => { st.innerHTML = '<span class="spinner"></span> ' + esc(msg); };
+    let r;
+    if (url) {
+      const prompt = { text: analysisPrompt('this YouTube video (use what is spoken)') };
+      const clip = +S.clip ? { videoMetadata: { startOffset: '0s', endOffset: S.clip + 's' } } : {};
+      try {
+        r = await gemini([{ fileData: { fileUri: url }, ...clip }, prompt], status, { mediaResolution: 'MEDIA_RESOLUTION_LOW' });
+      } catch (e) {
+        if (e.status !== 400) throw e;               // older API shape: retry without the speed-ups
+        status('Retrying in compatibility mode…');
+        r = await gemini([{ fileData: { fileUri: url } }, prompt], status);
+      }
+    } else {
+      r = await gemini([{ text: analysisPrompt('the following text') + '\n\nTEXT:\n' + text.slice(0, 60000) }], status);
+    }
     r.source = url || 'text';
     lastResult[S.lang] = r;
     renderResults();
@@ -463,6 +486,17 @@ function initSettings() {
   $('#voice').onchange = e => { S.voice[S.lang] = e.target.value; persist(); deviceSpeak(testPhrase()); };
   const showEngine = () => { $('#gVoiceBox').style.display = S.tts === 'gemini' ? 'block' : 'none'; $('#dVoiceBox').style.display = S.tts === 'gemini' ? 'none' : 'block'; };
   $('#engine').value = S.tts; showEngine();
+  $('#engine').addEventListener('sync', showEngine);
+  $('#clip').value = String(S.clip);
+  $('#clip').onchange = e => { S.clip = +e.target.value; persist(); };
+  $('#testBtn').onclick = async () => {
+    const out = $('#testOut'); out.innerHTML = '<span class="spinner"></span> Testing…';
+    try {
+      const r = await gemini([{ text: 'Return ONLY JSON: {"ok": true, "word": a common Spanish word}' }],
+        msg => { out.textContent = msg; });
+      out.textContent = '✅ Connected. Gemini says: ' + (r.word || 'ok');
+    } catch (e) { out.textContent = '❌ ' + e.message; }
+  };
   $('#engine').onchange = e => { S.tts = e.target.value; persist(); showEngine(); speak(testPhrase()); };
   $('#gvoice').value = S.gvoice[S.lang];
   $('#gvoice').onchange = e => { S.gvoice[S.lang] = e.target.value; persist(); speak(testPhrase()); };
