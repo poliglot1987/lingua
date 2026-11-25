@@ -13,10 +13,13 @@ let cards = load('cards', []);
 const known = load('known', {});
 let newLog = load('newlog', {});
 let sources = load('sources', []);          // recent videos / articles / texts
+let deleted = load('deleted', {});          // id -> time a card was deleted (so sync doesn't bring it back)
 const persist = () => {
   save('settings', S); save('cards', cards); save('known', known); save('newlog', newLog);
   while (!save('sources', sources) && sources.length) sources.pop();   // storage full: drop oldest
+  save('deleted', deleted);
   updateBadge();
+  scheduleSync();
 };
 
 // ---------- languages ----------
@@ -76,7 +79,53 @@ async function gemini(parts, onStatus, extra, opts) {
       if (onStatus) onStatus(`${m} is busy, trying another model…`);
     }
   }
-  throw new Error('All models are busy right now. Please try again in a few minutes. (' + lastErr.message + ')');
+  const textOnly = parts.every(p => typeof p.text === 'string') && !(opts && opts.tools);
+  if (S.orKey && textOnly) {
+    if (onStatus) onStatus('Gemini is busy, using the backup AI…');
+    try { return await openRouter(parts.map(p => p.text).join('\n\n'), !(opts && opts.json === false), onStatus); }
+    catch (e) { lastErr = e; }
+  }
+  const err = new Error('All models are busy right now. (' + lastErr.message + ')'); err.retry = true; throw err;
+}
+
+// Backup AI: OpenRouter's free-model router (OpenAI-style API, streamed so the iPad never times out)
+async function openRouter(prompt, json, onStatus, noFormat) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 240000);
+  let text = '';
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST', signal: ctl.signal,
+      headers: { Authorization: 'Bearer ' + S.orKey, 'Content-Type': 'application/json', 'X-Title': 'Lingua' },
+      body: JSON.stringify({ model: 'openrouter/free', stream: true,
+        messages: [{ role: 'user', content: prompt + (json ? '\n\nAnswer with valid JSON only, no other text.' : '') }],
+        ...(json && !noFormat ? { response_format: { type: 'json_object' } } : {}) }) });
+    if (!res.ok) {
+      let msg = 'Backup AI error ' + res.status;
+      try { msg = 'Backup AI: ' + (await res.json()).error.message; } catch {}
+      if (res.status === 400 && json && !noFormat) { clearTimeout(timer); return openRouter(prompt, json, onStatus, true); }
+      const err = new Error(msg); err.status = res.status; throw err;
+    }
+    const reader = res.body.getReader(), dec = new TextDecoder(); let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true }); let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const d = line.slice(5).trim(); if (d === '[DONE]') continue;
+        let c; try { c = JSON.parse(d); } catch { continue; }
+        if (c.error) throw new Error('Backup AI: ' + (c.error.message || 'error'));
+        const delta = c.choices?.[0]?.delta || {};
+        if (delta.reasoning && onStatus) onStatus('Backup AI is thinking…');
+        if (delta.content) { text += delta.content; if (onStatus) onStatus('Backup AI writing… ' + text.length.toLocaleString() + ' characters'); }
+      }
+    }
+  } catch (e) {
+    if (e.status || /^Backup AI/.test(e.message)) throw e;
+    throw new Error('Backup AI connection lost (' + e.message + ')');
+  } finally { clearTimeout(timer); }
+  if (!text) throw new Error('Backup AI gave an empty answer');
+  return json ? parseJSON(text.replace(/^[\s\S]*?```(?:json)?/, m => m.includes('```') ? '' : m).replace(/```[\s\S]*$/, '')) : text;
 }
 // Streams the answer (server-sent events) so the iPad never sees a silent connection
 // (Safari drops requests that send nothing for about a minute). Thought summaries keep it alive.
@@ -133,7 +182,7 @@ async function streamOnce(model, parts, extra, opts, thinking) {
     if (e.status) throw e;
     const err = new Error(e.name === 'AbortError' ? 'Gemini took longer than 4 minutes. Try a shorter video part (Settings → Video length) or a shorter text.'
       : 'Connection lost (' + e.message + '). Keep Lingua open on screen while it works, then try again.');
-    err.status = 0; throw err;
+    err.status = 0; err.retry = true; throw err;
   } finally { clearTimeout(timer); }
   if (!text) {
     if (finish === 'RECITATION') throw new Error('Google would not copy this page word for word. Open the article in Safari → aA → Show Reader → select all → copy, then paste it into the text box.');
@@ -227,10 +276,10 @@ const TS_LINE = /^[ \t]*(?:\d{1,2}:)?\d{1,2}:\d{2}[ \t]*$/gm;
 const hasTimestamps = t => (t.match(TS_LINE) || []).length >= 3 || (t.match(/^[ \t]*(?:\d{1,2}:)?\d{1,2}:\d{2}[ \t]+\S/gm) || []).length >= 3;
 const stripTimestamps = t => t.replace(/^[ \t]*(?:\d{1,2}:)?\d{1,2}:\d{2}[ \t]*/gm, '').replace(/\n{2,}/g, '\n');
 
-function analysisPrompt(kind, song) {
-  const c = L(), kn = K().slice(-400).join(', ');
+function analysisPrompt(kind, song, l = S.lang) {
+  const c = CATALOG[l], kn = K(l).slice(-400).join(', ');
   const fromText = kind !== 'video';
-  return `You are an expert ${c.name} teacher. The learner's native language is Hungarian, but write every explanation in clear English. Learner level: ${lvl()} (CEFR).
+  return `You are an expert ${c.name} teacher. The learner's native language is Hungarian, but write every explanation in clear English. Learner level: ${lvl(l)} (CEFR).
 ${c.extra || ''}
 Analyse ${kind === 'video' ? 'this YouTube video (use what is spoken)' : 'the text below'}. Extract what is most useful for this learner: words at or slightly above their level, every idiomatic expression, and the notable grammar.
 ${song ? 'This is a SONG: explain slang, shortened or poetic forms (e.g. dropped letters, contractions) and their everyday equivalents, and mention regional flavour. Treat each line as a sentence.' : ''}
@@ -243,6 +292,41 @@ Return ONLY JSON:
 Up to 40 vocabulary items ordered by usefulness, all idioms you find, up to 6 grammar points. Quote examples exactly.`;
 }
 
+// Runs one analysis (video, article link or pasted text). Used by the Analyse button and the waiting list.
+async function runAnalysis(inp, status) {
+  const { text, song } = inp, l = inp.lang, urlRaw = inp.url || '';
+  const yt = normalizeYouTube(urlRaw), isArticle = !yt && /^https?:\/\//i.test(urlRaw);
+  let src;
+  if (text) {                                        // pasted text (maybe a transcript of the linked video)
+    status('Reading…');
+    const ts = hasTimestamps(text);
+    const r = await gemini([{ text: analysisPrompt('text', song, l) + '\n\nTEXT:\n' + (ts ? stripTimestamps(text) : text).slice(0, 30000) }], status);
+    src = { kind: yt ? 'transcript' : 'text', url: yt || (isArticle ? urlRaw : ''), text: text.slice(0, 60000), result: r };
+  } else if (yt) {                                   // video only
+    status('Watching the video… keep Lingua open on screen (30–90 s)');
+    const prompt = { text: analysisPrompt('video', song, l) };
+    const clip = +S.clip ? { videoMetadata: { startOffset: '0s', endOffset: S.clip + 's' } } : {};
+    let r;
+    try { r = await gemini([{ fileData: { fileUri: yt }, ...clip }, prompt], status, { mediaResolution: 'MEDIA_RESOLUTION_LOW' }); }
+    catch (e) { if (e.status !== 400) throw e; status('Retrying in compatibility mode…'); r = await gemini([{ fileData: { fileUri: yt } }, prompt], status); }
+    src = { kind: 'video', url: yt, result: r };
+  } else {                                           // article link
+    status('Opening the article…');
+    const page = await gemini([{ text: `Use the URL context tool to open ${urlRaw}. Return ONLY the main article text exactly as written, in its original language: no translation, summary or commentary. First line: the headline. Then the body paragraphs separated by blank lines. Leave out menus, ads, captions and comments. If the page cannot be opened, return exactly CANNOT_ACCESS.` }],
+      status, {}, { json: false, tools: [{ url_context: {} }] });
+    if (/CANNOT_ACCESS/.test(page) || page.trim().length < 150)
+      throw new Error('This site could not be opened (paywall or blocked). Open it in Safari → aA → Show Reader → select all → copy, and paste it into the text box.');
+    const body = page.trim();
+    status('Reading…');
+    const r = await gemini([{ text: analysisPrompt('text', song, l) + '\n\nTEXT:\n' + body.slice(0, 30000) }], status);
+    if (!r.title) r.title = body.split('\n')[0].slice(0, 120);
+    src = { kind: 'article', url: urlRaw, text: body.slice(0, 60000), result: r };
+  }
+  src.id = 's' + Date.now(); src.lang = l; src.song = song; src.date = Date.now(); src.title = src.result.title || 'Untitled';
+  return src;
+}
+function addSource(src) { sources.unshift(src); sources = sources.slice(0, 15); persist(); renderRecent(); }
+
 $('#analyze').onclick = async () => {
   const urlRaw = $('#yt').value.trim(), text = $('#txt').value.trim(), song = $('#songMode').checked;
   const yt = normalizeYouTube(urlRaw), isArticle = !yt && /^https?:\/\//i.test(urlRaw);
@@ -250,43 +334,56 @@ $('#analyze').onclick = async () => {
   if (!urlRaw && !text) return toast('Paste a link or some text');
   const out = $('#results'), st = $('#analyzeStatus'), btn = $('#analyze');
   const status = m => { st.innerHTML = '<span class="spinner"></span> ' + esc(m); };
+  const inp = { url: urlRaw, text, song, lang: S.lang };
   btn.disabled = true; out.innerHTML = '';
   try {
-    let src;
-    if (text) {                                        // pasted text (maybe a transcript of the linked video)
-      status('Reading…');
-      const ts = hasTimestamps(text);
-      const r = await gemini([{ text: analysisPrompt('text', song) + '\n\nTEXT:\n' + (ts ? stripTimestamps(text) : text).slice(0, 30000) }], status);
-      src = { kind: yt ? 'transcript' : 'text', url: yt || (isArticle ? urlRaw : ''), text: text.slice(0, 60000), result: r };
-    } else if (yt) {                                   // video only
-      status('Watching the video… keep Lingua open on screen (30–90 s)');
-      const prompt = { text: analysisPrompt('video', song) };
-      const clip = +S.clip ? { videoMetadata: { startOffset: '0s', endOffset: S.clip + 's' } } : {};
-      let r;
-      try { r = await gemini([{ fileData: { fileUri: yt }, ...clip }, prompt], status, { mediaResolution: 'MEDIA_RESOLUTION_LOW' }); }
-      catch (e) { if (e.status !== 400) throw e; status('Retrying in compatibility mode…'); r = await gemini([{ fileData: { fileUri: yt } }, prompt], status); }
-      src = { kind: 'video', url: yt, result: r };
-    } else {                                           // article link
-      status('Opening the article…');
-      const page = await gemini([{ text: `Use the URL context tool to open ${urlRaw}. Return ONLY the main article text exactly as written, in its original language: no translation, summary or commentary. First line: the headline. Then the body paragraphs separated by blank lines. Leave out menus, ads, captions and comments. If the page cannot be opened, return exactly CANNOT_ACCESS.` }],
-        status, {}, { json: false, tools: [{ url_context: {} }] });
-      if (/CANNOT_ACCESS/.test(page) || page.trim().length < 150)
-        throw new Error('This site could not be opened (paywall or blocked). Open it in Safari → aA → Show Reader → select all → copy, and paste it into the text box.');
-      const body = page.trim();
-      status('Reading…');
-      const r = await gemini([{ text: analysisPrompt('text', song) + '\n\nTEXT:\n' + body.slice(0, 30000) }], status);
-      if (!r.title) r.title = body.split('\n')[0].slice(0, 120);
-      src = { kind: 'article', url: urlRaw, text: body.slice(0, 60000), result: r };
-    }
-    src.id = 's' + Date.now(); src.lang = S.lang; src.song = song; src.date = Date.now(); src.title = src.result.title || 'Untitled';
-    sources.unshift(src); sources = sources.slice(0, 15);
-    current = src; persist(); renderCurrent(); renderRecent();
-    st.textContent = '';
-    if (src.text) { $('#yt').value = ''; $('#txt').value = ''; }
+    const src = await runAnalysis(inp, status);
+    addSource(src); current = src; renderCurrent();
+    st.textContent = ''; $('#yt').value = ''; $('#txt').value = '';
   } catch (e) {
-    st.textContent = ''; out.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    st.textContent = '';
+    if (e.retry) {
+      enqueue(inp, e.message); $('#yt').value = ''; $('#txt').value = '';
+      out.innerHTML = `<div class="err">${esc(e.message)}<br><b>Saved to your waiting list.</b> Lingua tries again by itself every few minutes while the app is open.</div>`;
+    } else out.innerHTML = `<div class="err">${esc(e.message)}</div>`;
   } finally { btn.disabled = false; }
 };
+
+// ---------- waiting list: retries busy analyses automatically ----------
+let queue = load('queue', []), qBusy = false;
+const BACKOFF = [2, 5, 10, 20, 30];
+function enqueue(inp, msg) { queue.push({ ...inp, id: 'q' + Date.now(), tries: 0, next: Date.now() + 2 * MIN, err: msg }); save('queue', queue); renderQueue(); }
+function qLabel(q) { const y = normalizeYouTube(q.url || ''); return q.text ? q.text.slice(0, 70).replace(/\s+/g, ' ') + '…' : y ? 'YouTube video' : (q.url || '').replace(/^https?:\/\/(www\.)?/, '').slice(0, 60); }
+function renderQueue() {
+  const box = $('#queueBox'); if (!box) return;
+  if (!queue.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `<h3>Waiting list</h3><div class="card">${queue.map(q => `<div class="item"><div>
+      <b>${esc(qLabel(q))}</b> <span class="tag">${esc(q.lang.toUpperCase())}</span>
+      <div class="muted small">${q.trying ? '<span class="spinner"></span> Trying now…' : q.failed ? '❌ ' + esc(q.err) : 'Next try ' + new Date(q.next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (q.tries ? ' · tried ' + q.tries + '×' : '')}</div></div>
+    <div class="acts">${q.failed || q.trying ? '' : `<button class="ic" data-qnow="${q.id}">Try now</button>`}<button class="ic" data-qdel="${q.id}" aria-label="Remove">✕</button></div></div>`).join('')}
+    <p class="muted small">Lingua retries while the app is open. Finished items appear under Recent.</p></div>`;
+}
+$('#queueBox').addEventListener('click', e => {
+  const n = e.target.closest('[data-qnow]'), d = e.target.closest('[data-qdel]');
+  if (n) { const q = queue.find(x => x.id === n.dataset.qnow); if (q) { q.next = 0; processQueue(); } }
+  if (d) { queue = queue.filter(x => x.id !== d.dataset.qdel); save('queue', queue); renderQueue(); }
+});
+async function processQueue() {
+  if (qBusy || !S.apiKey) return;
+  const q = queue.find(x => !x.failed && x.next <= Date.now()); if (!q) return;
+  qBusy = true; q.trying = true; renderQueue();
+  try {
+    const src = await runAnalysis(q, () => {});
+    queue = queue.filter(x => x !== q); addSource(src);
+    if (!current && src.lang === S.lang) { current = src; renderCurrent(); }
+    toast('✓ Ready: ' + src.title + ' (see Recent)');
+  } catch (e) {
+    q.err = e.message;
+    if (e.retry) { q.tries++; q.next = Date.now() + BACKOFF[Math.min(q.tries, BACKOFF.length - 1)] * MIN; } else q.failed = true;
+  } finally { q.trying = false; qBusy = false; save('queue', queue); renderQueue(); }
+}
+setInterval(processQueue, 30000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') processQueue(); });
 
 function renderRecent() {
   const list = sources.filter(s => s.lang === S.lang), box = $('#recent');
@@ -762,7 +859,7 @@ function renderDeck() {
 $('#deckList').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.del) {
-    if (b.dataset.armed) { cards = cards.filter(c => c.id !== b.dataset.del); persist(); renderDeck(); toast('Deleted'); }
+    if (b.dataset.armed) { deleted[b.dataset.del] = Date.now(); cards = cards.filter(c => c.id !== b.dataset.del); persist(); renderDeck(); toast('Deleted'); }
     else { b.dataset.armed = 1; b.textContent = 'Sure?'; }
   }
   if (b.dataset.unknown) { known[S.lang] = K().filter(w => w !== b.dataset.unknown); persist(); renderDeck(); }
@@ -792,7 +889,7 @@ $('#exportAnki').onclick = () => {
   const rows = cards.filter(c => c.lang === S.lang).map(c => [clean((c.article ? c.article + ' ' : '') + c.front),
     clean(c.back) + (c.example ? '<br><i>' + clean(c.example) + '</i><br>' + clean(c.exampleEn) : '') + (c.note ? '<br><small>' + clean(c.note) + '</small>' : ''),
     'lingua ' + S.lang + ' ' + c.type].join('\t'));
-  saveFile(`lingua-${S.lang}-anki.txt`, '#separator:tab\n#html:true\n#tags column:3\n' + rows.join('\n'), 'text/plain');
+  saveFile(`lingua-${S.lang}-anki.tsv`, '#separator:tab\n#html:true\n#tags column:3\n' + rows.join('\n'), 'text/tab-separated-values');
 };
 $('#importJson').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
@@ -831,11 +928,20 @@ function initSettings() {
   $('#modelCustom').value = S.modelCustom; $('#modelCustom').style.display = $('#model').value === 'custom' ? 'block' : 'none';
   $('#model').onchange = e => { S.model = e.target.value; $('#modelCustom').style.display = S.model === 'custom' ? 'block' : 'none'; persist(); };
   $('#modelCustom').onchange = e => { S.modelCustom = e.target.value; persist(); };
+  $('#orKey').value = S.orKey || '';
+  $('#orKey').onchange = e => { S.orKey = e.target.value.trim(); persist(); toast(S.orKey ? 'Backup AI key saved' : 'Backup AI off'); };
   $('#clip').value = String(S.clip); $('#clip').onchange = e => { S.clip = +e.target.value; persist(); };
   $('#testBtn').onclick = async () => {
     const out = $('#testOut'); out.innerHTML = '<span class="spinner"></span> Testing…';
-    try { const r = await gemini([{ text: `Return ONLY JSON: {"word": a common ${L().name} word}` }], m => { out.textContent = m; }); out.textContent = '✅ Connected. Gemini says: ' + (r.word || 'ok'); }
-    catch (e) { out.textContent = '❌ ' + e.message; }
+    let msg = '';
+    try { const r = await callModel(S.model === 'custom' ? S.modelCustom.trim() : S.model, [{ text: `Return ONLY JSON: {"word": a common ${L().name} word}` }], {}, {}); msg = '✅ Gemini works (' + (r.word || 'ok') + ')'; }
+    catch (e) { msg = '❌ Gemini: ' + e.message; }
+    if (S.orKey) {
+      out.textContent = msg + ' · testing backup AI…';
+      try { const r = await openRouter(`Return ONLY JSON: {"word": a common ${L().name} word}`, true); msg += ' · ✅ Backup AI works (' + (r.word || 'ok') + ')'; }
+      catch (e) { msg += ' · ❌ ' + e.message; }
+    }
+    out.textContent = msg;
   };
   $('#dayStart').innerHTML = [0, 1, 2, 3, 4, 5, 6, 7, 8].map(h => `<option value="${h}">${String(h).padStart(2, '0')}:00${h === 4 ? ' (like Anki)' : ''}</option>`).join('');
   $('#dayStart').value = String(S.dayStart); $('#dayStart').onchange = e => { S.dayStart = +e.target.value; persist(); };
@@ -850,7 +956,72 @@ function initSettings() {
   $('#gvoice').onchange = e => { S.gvoice[S.lang] = e.target.value; persist(); speak(L().test); };
   $('#voice').onchange = e => { S.voice[S.lang] = e.target.value; persist(); deviceSpeak(L().test); };
   renderLangSettings();
+  $('#ghToken').value = S.ghToken || '';
+  $('#ghToken').onchange = e => { S.ghToken = e.target.value.trim(); S.gistId = ''; persist(); if (S.ghToken) syncNow(true); };
+  $('#syncBtn').onclick = () => syncNow(true);
+  syncStatus(S.lastSync ? 'Last synced ' + new Date(S.lastSync).toLocaleString() : (S.ghToken ? '' : 'Not set up'));
 }
+
+// ---------- SYNC (private GitHub Gist) ----------
+// Every device keeps its own copy; sync = download, merge, upload. Newest change per card wins,
+// deleted cards stay deleted, known words are combined. The API keys never leave the device.
+const GIST_FILE = 'lingua-sync.json';
+let syncing = false, syncT = null;
+function syncStatus(m) { const o = $('#syncOut'); if (o) o.textContent = m; }
+function scheduleSync() { if (!S.ghToken || syncing) return; clearTimeout(syncT); syncT = setTimeout(() => syncNow(false), 8000); }
+async function gh(path, opt = {}) {
+  const res = await fetch('https://api.github.com' + path, { ...opt,
+    headers: { Authorization: 'Bearer ' + S.ghToken, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' } });
+  if (res.status === 401) throw new Error('GitHub token not accepted. Check it in Settings.');
+  if (!res.ok) throw new Error('GitHub ' + res.status);
+  return res.json();
+}
+const SYNC_SETTINGS = ['langs', 'level', 'dayStart', 'newPerDay', 'retention', 'clip', 'model', 'tts', 'gvoice', 'rate'];
+function payload() {
+  const st = {}; SYNC_SETTINGS.forEach(k => st[k] = S[k]);
+  return JSON.stringify({ v: 1, updated: Date.now(), cards, known, newLog, deleted, settings: st });
+}
+const modTime = c => Math.max(c.last || 0, c.added || 0);
+function mergeRemote(r) {
+  Object.entries(r.deleted || {}).forEach(([id, t]) => { deleted[id] = Math.max(deleted[id] || 0, t); });
+  const map = new Map(cards.map(c => [c.id, c]));
+  (r.cards || []).forEach(rc => { const lc = map.get(rc.id); if (!lc || modTime(rc) > modTime(lc)) map.set(rc.id, rc); });
+  cards = [...map.values()].filter(c => !(deleted[c.id] && deleted[c.id] >= modTime(c)));
+  Object.entries(r.known || {}).forEach(([l, list]) => list.forEach(w => K(l).includes(w) || K(l).push(w)));
+  Object.entries(r.newLog || {}).forEach(([k, n]) => { newLog[k] = Math.max(newLog[k] || 0, n); });
+  const old = Date.now() - 90 * DAY; Object.keys(deleted).forEach(id => { if (deleted[id] < old) delete deleted[id]; });
+  if (!S.lastSync && r.settings) Object.assign(S, r.settings);       // a new device takes over your settings once
+}
+async function syncNow(manual) {
+  if (!S.ghToken || syncing) return;
+  syncing = true; clearTimeout(syncT); syncStatus('Syncing…');
+  try {
+    if (!S.gistId) {
+      const list = await gh('/gists?per_page=100');
+      const g = list.find(x => x.files && x.files[GIST_FILE]);
+      if (g) S.gistId = g.id;
+      else { const c = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'Lingua sync (private)', public: false, files: { [GIST_FILE]: { content: payload() } } }) }); S.gistId = c.id; }
+    }
+    const g = await gh('/gists/' + S.gistId), f = g.files && g.files[GIST_FILE];
+    if (f) {
+      const txt = f.truncated ? await (await fetch(f.raw_url)).text() : f.content;
+      try { mergeRemote(JSON.parse(txt)); } catch {}
+    }
+    await gh('/gists/' + S.gistId, { method: 'PATCH', body: JSON.stringify({ files: { [GIST_FILE]: { content: payload() } } }) });
+    S.lastSync = Date.now();
+    save('settings', S); save('cards', cards); save('known', known); save('newlog', newLog); save('deleted', deleted);
+    updateBadge(); syncStatus('✅ Synced ' + new Date(S.lastSync).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    const v = document.querySelector('#tabs button.on')?.dataset.v;
+    if (v === 'deck') renderDeck(); if (v === 'review' && !revealed) renderReview();
+    if (manual) { renderLangSettings(); toast('Synced'); }
+  } catch (e) {
+    syncStatus('❌ ' + e.message); if (manual) toast('Sync failed: ' + e.message);
+    if (/not found|404/i.test(e.message)) S.gistId = '';
+  } finally { syncing = false; }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && S.ghToken && Date.now() - (S.lastSync || 0) > 60000) syncNow(false);
+});
 
 // ---------- navigation & language ----------
 function show(v) {
@@ -859,6 +1030,7 @@ function show(v) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   if (v === 'review') renderReview();
   if (v === 'deck') renderDeck();
+  if (v === 'practice' && window.Lingua && window.Lingua.onShow) window.Lingua.onShow();
   window.scrollTo(0, 0);
 }
 $('#tabs').onclick = e => { const b = e.target.closest('button'); if (b) show(b.dataset.v); };
@@ -871,11 +1043,17 @@ function setLang(l) {
   if (current && current.lang !== l) current = sources.find(s => s.lang === l) || null;
   session = { mode: 'normal' };
   loadVoices(); renderCurrent(); renderRecent(); setSayLinks(); persist();
+  if (window.Lingua && window.Lingua.onLang) window.Lingua.onLang();
   const v = document.querySelector('#tabs button.on').dataset.v; if (v === 'review') renderReview(); if (v === 'deck') renderDeck();
 }
 $('#langswitch').onclick = e => { const b = e.target.closest('button'); if (b) setLang(b.dataset.l); };
 
-initSettings(); setLang(S.lang); updateBadge();
+// shared with practice.js
+window.Lingua = { S, CATALOG, LEVELS, L, lvl, esc, norm, $, toast, persist, load, save, gemini, speak, showSheet, closeSheet,
+  get cards() { return cards; }, onLang: null, onShow: null };
+
+initSettings(); setLang(S.lang); updateBadge(); renderQueue(); setTimeout(processQueue, 3000);
+if (S.ghToken) setTimeout(() => syncNow(false), 1500);
 current = sources.find(s => s.lang === S.lang) || null; renderCurrent();
 if (!S.apiKey) show('settings');
 setInterval(updateBadge, 60000);

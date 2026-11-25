@@ -38,6 +38,7 @@
     </div>
     <div id="results"></div>
 
+    <div id="queueBox"></div>
     <h3>Recent</h3>
     <div class="card" id="recent"></div>
 
@@ -62,9 +63,21 @@
     <div id="reviewBox"></div>
   </section>
 
-  <!-- SPEAK -->
-  <section class="view" id="v-speak">
-    <h2>Pronunciation practice</h2>
+  <!-- PRACTICE -->
+  <section class="view" id="v-practice">
+    <div class="row"><button class="btn ghost" id="prBack" hidden>‹ All exercises</button><h2 class="grow" id="prTitle" style="margin:6px 0 14px">Practice</h2></div>
+    <div class="prgrid" id="prMenu">
+      <button data-mode="builder"><b>Sentence builder</b><span>Put the words in the right order</span></button>
+      <button data-mode="conj"><b>Conjugation</b><span>Drill verb forms, or race the clock</span></button>
+      <button data-mode="gap"><b>Gap fill</b><span>Your own sentences, one word missing</span></button>
+      <button data-mode="dict"><b>Dictation</b><span>Listen and type what you hear</span></button>
+      <button data-mode="gender"><b>Article blitz</b><span>der / die / das, el / la… in 60 seconds</span></button>
+      <button data-mode="pron"><b>Pronunciation</b><span>Record yourself, get a score and tips</span></button>
+    </div>
+    <div class="card row" id="offlineBox" style="margin-top:12px"><div class="grow"><b>Offline practice</b><div class="muted small" id="offStat"></div></div>
+      <button class="btn ghost" id="offBtn">Prepare for offline</button></div>
+    <div id="prPanel" hidden></div>
+    <div id="pronPanel" hidden>
     <div class="card">
       <label for="sayText">Sentence to say</label>
       <textarea id="sayText" style="min-height:80px"></textarea>
@@ -80,6 +93,7 @@
       <p class="muted small" id="recStatus">Tap, say the sentence, tap again to stop.</p>
       <div id="speakOut" style="text-align:left"></div>
     </div>
+  </div>
   </section>
 
   <!-- WORDS -->
@@ -90,7 +104,7 @@
       <div class="seg" id="deckFilter">
         <button data-f="all" class="on">All</button><button data-f="word">Words</button><button data-f="idiom">Idioms</button><button data-f="sentence">Sentences</button><button data-f="known">Known</button>
       </div>
-      <button class="btn ghost" id="deckCsv">Export CSV</button>
+      <button class="btn ghost" id="deckCsv">Spreadsheet export</button>
     </div>
     <div class="card" id="deckList"></div>
   </section>
@@ -121,6 +135,13 @@
         <button class="btn ghost" id="testBtn">Test connection</button>
         <span class="small" id="testOut"></span>
       </div>
+    </div>
+
+    <div class="card">
+      <label for="orKey">Backup AI (used when Gemini is busy)</label>
+      <p class="muted small">Free. Sign in at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a> (Google login works) → <b>Create key</b> → paste it here.
+        It covers texts, articles (once opened), explanations and exercises. Videos and pronunciation always need Gemini. Free backup models may keep what you send to improve themselves.</p>
+      <input id="orKey" type="password" placeholder="OpenRouter key (starts with sk-or-)" autocomplete="off">
     </div>
 
     <div class="card">
@@ -176,12 +197,23 @@
     </div>
 
     <div class="card">
+      <label for="ghToken">Sync between devices</label>
+      <p class="muted small">Keeps your words, progress and known words the same on iPad and computer, using one private file in your GitHub account.</p>
+      <ol class="muted small" style="padding-left:20px;margin:6px 0 10px">
+        <li>Open <a href="https://github.com/settings/tokens/new?scopes=gist&amp;description=Lingua%20sync" target="_blank" rel="noopener">this GitHub page</a> (only the "gist" box is ticked) → choose an expiration (e.g. No expiration) → <b>Generate token</b> → copy it.</li>
+        <li>Paste it here on <b>every</b> device you use. Your Gemini key stays on each device and is never synced.</li>
+      </ol>
+      <input id="ghToken" type="password" placeholder="GitHub token (starts with ghp_)" autocomplete="off">
+      <div class="row" style="margin-top:10px"><button class="btn ghost" id="syncBtn">Sync now</button><span class="small" id="syncOut"></span></div>
+    </div>
+
+    <div class="card">
       <label>Backup &amp; export</label>
       <div class="row">
         <button class="btn ghost" id="exportJson">Backup (JSON)</button>
         <label class="btn ghost filebtn">Restore<input type="file" id="importJson" accept=".json,application/json" hidden></label>
-        <button class="btn ghost" id="exportAnki">Export for Anki</button>
-        <button class="btn ghost" id="exportCsv">Export CSV</button>
+        <button class="btn ghost" id="exportAnki">Export for Anki (this language)</button>
+        <button class="btn ghost" id="exportCsv">Spreadsheet (Excel / Numbers)</button>
       </div>
       <p class="muted small">Your deck lives in this app on this iPad. Make a backup now and then (save it to Files / iCloud Drive).</p>
     </div>
@@ -197,12 +229,13 @@
 <nav class="tabs" id="tabs">
   <button data-v="learn" class="on"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5v5l4.5-2.5z" class="fill"/></svg>Learn</button>
   <button data-v="review"><svg viewBox="0 0 24 24"><rect x="4" y="7" width="13" height="13" rx="2"/><path d="M8 4h10a2 2 0 0 1 2 2v10"/></svg>Review<i class="badge" id="dueBadge" hidden></i></button>
-  <button data-v="speak"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>Speak</button>
+  <button data-v="practice"><svg viewBox="0 0 24 24"><path d="M10 4h4v3.5a2 2 0 1 0 0 3.5V15h-3.5a2 2 0 1 1-3.5 0H4v-4h3.5a2 2 0 1 0 0-3.5H4V4z"/><path d="M14 15h6v5h-6zM4 15h3"/></svg>Practice</button>
   <button data-v="deck"><svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/></svg>Words</button>
   <button data-v="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>Settings</button>
 </nav>
 <div class="toast" id="toast"></div>
 <script src="fsrs.js"></script>
 <script src="app.js"></script>
+<script src="practice.js"></script>
 </body>
 </html>
